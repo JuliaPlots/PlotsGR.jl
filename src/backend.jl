@@ -15,6 +15,8 @@ const gr_markertype = KW(
     :diamond => -13,
     :utriangle => -3,
     :dtriangle => -5,
+    :ltriangle => -18,
+    :rtriangle => -17,
     :pentagon => -21,
     :hexagon => -22,
     :heptagon => -23,
@@ -61,10 +63,10 @@ function gr_getcolorind(c)
     convert(Int, GR.inqcolorfromrgb(red(c), green(c), blue(c)))
 end
 
-gr_set_linecolor(c)   = GR.setlinecolorind(gr_getcolorind(cycle(c,1)))
-gr_set_fillcolor(c)   = GR.setfillcolorind(gr_getcolorind(cycle(c,1)))
-gr_set_markercolor(c) = GR.setmarkercolorind(gr_getcolorind(cycle(c,1)))
-gr_set_textcolor(c)   = GR.settextcolorind(gr_getcolorind(cycle(c,1)))
+gr_set_linecolor(c)   = GR.setlinecolorind(gr_getcolorind(_cycle(c,1)))
+gr_set_fillcolor(c)   = GR.setfillcolorind(gr_getcolorind(_cycle(c,1)))
+gr_set_markercolor(c) = GR.setmarkercolorind(gr_getcolorind(_cycle(c,1)))
+gr_set_textcolor(c)   = GR.settextcolorind(gr_getcolorind(_cycle(c,1)))
 
 # --------------------------------------------------------------------------------------
 
@@ -111,20 +113,24 @@ function gr_polyline(x, y, func = GR.polyline; arrowside=:none)
     end
 end
 
+gr_inqtext(x, y, s::Symbol) = gr_inqtext(x, y, string(s))
+
 function gr_inqtext(x, y, s)
     if length(s) >= 2 && s[1] == '$' && s[end] == '$'
         GR.inqtextext(x, y, s[2:end-1])
-    elseif search(s, '\\') != 0 || search(s, '_') != 0 || search(s, '^') != 0
+    elseif search(s, '\\') != 0
         GR.inqtextext(x, y, s)
     else
         GR.inqtext(x, y, s)
     end
 end
 
+gr_text(x, y, s::Symbol) = gr_text(x, y, string(s))
+
 function gr_text(x, y, s)
     if length(s) >= 2 && s[1] == '$' && s[end] == '$'
         GR.mathtex(x, y, s[2:end-1])
-    elseif search(s, '\\') != 0 || search(s, '_') != 0 || search(s, '^') != 0
+    elseif search(s, '\\') != 0
         GR.textext(x, y, s)
     else
         GR.text(x, y, s)
@@ -184,7 +190,7 @@ function gr_lims(axis::Axis, adjust::Bool, expand = nothing)
 end
 
 
-function gr_fill_viewport(vp::AbstractVector{Float64}, c)
+function gr_fill_viewport(vp::AVec{Float64}, c)
     GR.savestate()
     GR.selntran(0)
     GR.setfillintstyle(GR.INTSTYLE_SOLID)
@@ -195,15 +201,20 @@ function gr_fill_viewport(vp::AbstractVector{Float64}, c)
 end
 
 
-normalize_zvals(zv::Void) = zv
-function normalize_zvals(zv::AbstractVector)
-    vmin, vmax = extrema(zv)
+normalize_zvals(args...) = nothing
+function normalize_zvals(zv::AVec, clims::NTuple{2, <:Real})
+    vmin, vmax = ignorenan_extrema(zv)
+    isfinite(clims[1]) && (vmin = clims[1])
+    isfinite(clims[2]) && (vmax = clims[2])
     if vmin == vmax
         zeros(length(zv))
     else
-        (zv - vmin) ./ (vmax - vmin)
+        clamp.((zv - vmin) ./ (vmax - vmin), 0, 1)
     end
 end
+
+gr_alpha(α::Void) = 1
+gr_alpha(α::Real) = α
 
 # ---------------------------------------------------------
 
@@ -212,17 +223,19 @@ function gr_draw_marker(xi, yi, msize, shape::Shape)
     sx, sy = coords(shape)
     # convert to ndc coords (percentages of window)
     GR.selntran(0)
+    w, h = gr_plot_size
+    f = msize / (w + h)
     xi, yi = GR.wctondc(xi, yi)
-    ms_ndc_x, ms_ndc_y = gr_pixels_to_ndc(msize, msize)
-    GR.fillarea(xi .+ sx .* ms_ndc_x,
-                yi .+ sy .* ms_ndc_y)
+    GR.fillarea(xi .+ sx .* f,
+                yi .+ sy .* f)
     GR.selntran(1)
 end
 
 # draw ONE symbol marker
 function gr_draw_marker(xi, yi, msize::Number, shape::Symbol)
     GR.setmarkertype(gr_markertype[shape])
-    GR.setmarkersize(0.3msize)
+    w, h = gr_plot_size
+    GR.setmarkersize(0.3msize / ((w + h) * 0.001))
     GR.polymarker([xi], [yi])
 end
 
@@ -232,46 +245,51 @@ function gr_draw_markers(series::Series, x, y, msize, mz)
     shapes = series[:markershape]
     if shapes != :none
         for i=1:length(x)
-            msi = cycle(msize, i)
-            shape = cycle(shapes, i)
+            msi = _cycle(msize, i)
+            shape = _cycle(shapes, i)
             cfunc = isa(shape, Shape) ? gr_set_fillcolor : gr_set_markercolor
             cfuncind = isa(shape, Shape) ? GR.setfillcolorind : GR.setmarkercolorind
 
             # draw a filled in shape, slightly bigger, to estimate a stroke
             if series[:markerstrokewidth] > 0
-                cfunc(cycle(series[:markerstrokecolor], i)) #, series[:markerstrokealpha])
+                cfunc(_cycle(series[:markerstrokecolor], i)) #, series[:markerstrokealpha])
                 gr_draw_marker(x[i], y[i], msi + series[:markerstrokewidth], shape)
             end
 
             # draw the shape
             if mz == nothing
-                cfunc(cycle(series[:markercolor], i)) #, series[:markeralpha])
+                cfunc(_cycle(series[:markercolor], i)) #, series[:markeralpha])
             else
                 # pick a color from the pre-loaded gradient
-                ci = round(Int, 1000 + cycle(mz, i) * 255)
+                ci = round(Int, 1000 + _cycle(mz, i) * 255)
                 cfuncind(ci)
                 GR.settransparency(_gr_gradient_alpha[ci-999])
             end
-            gr_draw_marker(x[i], y[i], msi, shape)
+            # don't draw filled area if marker shape is 1D
+            if !(shape in (:hline, :vline, :+, :x))
+                gr_draw_marker(x[i], y[i], msi, shape)
+            end
         end
     end
 end
 
-function gr_draw_markers(series::Series, x, y)
+function gr_draw_markers(series::Series, x, y, clims)
     isempty(x) && return
-    mz = normalize_zvals(series[:marker_z])
+    mz = normalize_zvals(series[:marker_z], clims)
     GR.setfillintstyle(GR.INTSTYLE_SOLID)
     gr_draw_markers(series, x, y, series[:markersize], mz)
-    if mz != nothing
-        gr_colorbar(series[:subplot])
+    if hascolorbar(series[:subplot])
+        GR.setscale(0)
+        gr_colorbar(series[:subplot], clims)
     end
 end
 
 # ---------------------------------------------------------
 
-function gr_set_line(w, style, c) #, a)
+function gr_set_line(lw, style, c) #, a)
     GR.setlinetype(gr_linetype[style])
-    GR.setlinewidth(w)
+    w, h = gr_plot_size
+    GR.setlinewidth(max(0, lw / ((w + h) * 0.001)))
     gr_set_linecolor(c) #, a)
 end
 
@@ -283,7 +301,7 @@ function gr_set_fill(c) #, a)
 end
 
 # this stores the conversion from a font pointsize to "percentage of window height" (which is what GR uses)
-const _gr_point_mult = zeros(1)
+const _gr_point_mult = 0.0018 * ones(1)
 
 # set the font attributes... assumes _gr_point_mult has been populated already
 function gr_set_font(f::Font; halign = f.halign, valign = f.valign,
@@ -314,22 +332,30 @@ end
 const viewport_plotarea = zeros(4)
 
 # the size of the current plot in pixels
-const gr_plot_size = zeros(2)
+const gr_plot_size = [600.0, 400.0]
 
-function gr_viewport_from_bbox(bb::BoundingBox, w, h, viewport_canvas)
+function gr_viewport_from_bbox(sp::Subplot{GRBackend}, bb::BoundingBox, w, h, viewport_canvas)
     viewport = zeros(4)
     viewport[1] = viewport_canvas[2] * (left(bb) / w)
     viewport[2] = viewport_canvas[2] * (right(bb) / w)
     viewport[3] = viewport_canvas[4] * (1.0 - bottom(bb) / h)
     viewport[4] = viewport_canvas[4] * (1.0 - top(bb) / h)
+    if is3d(sp)
+        vp = viewport[:]
+        extent = min(vp[2] - vp[1], vp[4] - vp[3])
+        viewport[1] = 0.5 * (vp[1] + vp[2] - extent)
+        viewport[2] = 0.5 * (vp[1] + vp[2] + extent)
+        viewport[3] = 0.5 * (vp[3] + vp[4] - extent)
+        viewport[4] = 0.5 * (vp[3] + vp[4] + extent)
+    end
     viewport
 end
 
 # change so we're focused on the viewport area
 function gr_set_viewport_cmap(sp::Subplot)
     GR.setviewport(
-        viewport_plotarea[2] + (is3d(sp) ? 0.04 : 0.02),
-        viewport_plotarea[2] + (is3d(sp) ? 0.07 : 0.05),
+        viewport_plotarea[2] + (is3d(sp) ? 0.07 : 0.02),
+        viewport_plotarea[2] + (is3d(sp) ? 0.10 : 0.05),
         viewport_plotarea[3],
         viewport_plotarea[4]
     )
@@ -350,7 +376,7 @@ function gr_set_viewport_polar()
     ymax -= 0.05 * (xmax - xmin)
     xcenter = 0.5 * (xmin + xmax)
     ycenter = 0.5 * (ymin + ymax)
-    r = 0.5 * min(xmax - xmin, ymax - ymin)
+    r = 0.5 * NaNMath.min(xmax - xmin, ymax - ymin)
     GR.setviewport(xcenter -r, xcenter + r, ycenter - r, ycenter + r)
     GR.setwindow(-1, 1, -1, 1)
     r
@@ -358,25 +384,53 @@ end
 
 # add the colorbar
 function gr_colorbar(sp::Subplot)
-    if sp[:colorbar] != :none
-        gr_set_viewport_cmap(sp)
-        GR.colormap()
-        gr_set_viewport_plotarea()
-    end
+    gr_set_viewport_cmap(sp)
+    GR.colorbar()
+    gr_set_viewport_plotarea()
+end
+
+function gr_colorbar(sp::Subplot, clims)
+    xmin, xmax = gr_xy_axislims(sp)[1:2]
+    gr_set_viewport_cmap(sp)
+    l = zeros(Int32, 1, 256)
+    l[1,:] = Int[round(Int, _i) for _i in linspace(1000, 1255, 256)]
+    GR.setwindow(xmin, xmax, clims[1], clims[2])
+    GR.cellarray(xmin, xmax, clims[2], clims[1], 1, length(l), l)
+    ztick = 0.5 * GR.tick(clims[1], clims[2])
+    GR.axes(0, ztick, xmax, clims[1], 0, 1, 0.005)
+    gr_set_viewport_plotarea()
 end
 
 gr_view_xcenter() = 0.5 * (viewport_plotarea[1] + viewport_plotarea[2])
 gr_view_ycenter() = 0.5 * (viewport_plotarea[3] + viewport_plotarea[4])
-gr_view_xdiff() = viewport_plotarea[2] - viewport_plotarea[1]
-gr_view_ydiff() = viewport_plotarea[4] - viewport_plotarea[3]
 
-function gr_pixels_to_ndc(x_pixels, y_pixels)
-    w,h = gr_plot_size
-    totx = w * gr_view_xdiff()
-    toty = h * gr_view_ydiff()
-    x_pixels / totx, y_pixels / toty
+function gr_legend_pos(s::Symbol,w,h)
+    str = string(s)
+    if str == "best"
+        str = "topright"
+    end
+    if contains(str,"right")
+        xpos = viewport_plotarea[2] - 0.05 - w
+    elseif contains(str,"left")
+        xpos = viewport_plotarea[1] + 0.11
+    else
+        xpos = (viewport_plotarea[2]-viewport_plotarea[1])/2 - w/2 +.04
+    end
+    if contains(str,"top")
+        ypos = viewport_plotarea[4] - 0.06
+    elseif contains(str,"bottom")
+        ypos = viewport_plotarea[3] + h + 0.06
+    else
+        ypos = (viewport_plotarea[4]-viewport_plotarea[3])/2 + h/2
+    end
+    (xpos,ypos)
 end
 
+function gr_legend_pos{S<:Real, T<:Real}(v::Tuple{S,T},w,h)
+    xpos = v[1] * (viewport_plotarea[2] - viewport_plotarea[1]) + viewport_plotarea[1]
+    ypos = v[2] * (viewport_plotarea[4] - viewport_plotarea[3]) + viewport_plotarea[3]
+    (xpos,ypos)
+end
 
 # --------------------------------------------------------------------------------------
 
@@ -437,12 +491,97 @@ function gr_display(plt::Plot)
 end
 
 
+function gr_set_xticks_font(sp)
+    flip = sp[:yaxis][:flip]
+    mirror = sp[:xaxis][:mirror]
+    gr_set_font(sp[:xaxis][:tickfont],
+                halign = (:left, :hcenter, :right)[sign(sp[:xaxis][:rotation]) + 2],
+                valign = (mirror ? :bottom : :top),
+                color = sp[:xaxis][:foreground_color_axis],
+                rotation = sp[:xaxis][:rotation])
+    return flip, mirror
+end
+
+
+function gr_set_yticks_font(sp)
+    flip = sp[:xaxis][:flip]
+    mirror = sp[:yaxis][:mirror]
+    gr_set_font(sp[:yaxis][:tickfont],
+                halign = (mirror ? :left : :right),
+                valign = (:top, :vcenter, :bottom)[sign(sp[:yaxis][:rotation]) + 2],
+                color = sp[:yaxis][:foreground_color_axis],
+                rotation = sp[:yaxis][:rotation])
+    return flip, mirror
+end
+
+function gr_get_ticks_size(ticks, i)
+    GR.savestate()
+    GR.selntran(0)
+    l = 0.0
+    for (cv, dv) in zip(ticks...)
+        tb = gr_inqtext(0, 0, string(dv))[i]
+        tb_min, tb_max = extrema(tb)
+        l = max(l, tb_max - tb_min)
+    end
+    GR.restorestate()
+    return l
+end
+
+function _update_min_padding!(sp::Subplot{GRBackend})
+    if !haskey(ENV, "GKSwstype")
+        if isijulia() || (isdefined(Main, :Juno) && Juno.isactive())
+            ENV["GKSwstype"] = "svg"
+        end
+    end
+    # Add margin given by the user
+    leftpad   = 2mm  + sp[:left_margin]
+    toppad    = 2mm  + sp[:top_margin]
+    rightpad  = 4mm  + sp[:right_margin]
+    bottompad = 2mm  + sp[:bottom_margin]
+    # Add margin for title
+    if sp[:title] != ""
+        toppad += 5mm
+    end
+    # Add margin for x and y ticks
+    xticks, yticks = axis_drawing_info(sp)[1:2]
+    if !(xticks in (nothing, false))
+        flip, mirror = gr_set_xticks_font(sp)
+        l = gr_get_ticks_size(xticks, 2)
+        if mirror
+            toppad += 1mm + gr_plot_size[2] * l * px
+        else
+            bottompad += 1mm + gr_plot_size[2] * l * px
+        end
+    end
+    if !(yticks in (nothing, false))
+        flip, mirror = gr_set_yticks_font(sp)
+        l = gr_get_ticks_size(yticks, 1)
+        if mirror
+            rightpad += 1mm + gr_plot_size[1] * l * px
+        else
+            leftpad += 1mm + gr_plot_size[1] * l * px
+        end
+    end
+    # Add margin for x label
+    if sp[:xaxis][:guide] != ""
+        bottompad += 4mm
+    end
+    # Add margin for y label
+    if sp[:yaxis][:guide] != ""
+        leftpad += 4mm
+    end
+    sp.minpad = (leftpad, toppad, rightpad, bottompad)
+end
+
 function gr_display(sp::Subplot{GRBackend}, w, h, viewport_canvas)
+    _update_min_padding!(sp)
+
     # the viewports for this subplot
-    viewport_subplot = gr_viewport_from_bbox(bbox(sp), w, h, viewport_canvas)
-    viewport_plotarea[:] = gr_viewport_from_bbox(plotarea(sp), w, h, viewport_canvas)
+    viewport_subplot = gr_viewport_from_bbox(sp, bbox(sp), w, h, viewport_canvas)
+    viewport_plotarea[:] = gr_viewport_from_bbox(sp, plotarea(sp), w, h, viewport_canvas)
     # get data limits
     data_lims = gr_xy_axislims(sp)
+    xy_lims = data_lims
 
     ratio = sp[:aspect_ratio]
     if ratio != :none
@@ -471,23 +610,25 @@ function gr_display(sp::Subplot{GRBackend}, w, h, viewport_canvas)
     # reduced from before... set some flags based on the series in this subplot
     # TODO: can these be generic flags?
     outside_ticks = false
-    cmap = false
-    draw_axes = true
+    cmap = hascolorbar(sp)
+    draw_axes = sp[:framestyle] != :none
     # axes_2d = true
     for series in series_list(sp)
         st = series[:seriestype]
-        if st in (:contour, :surface, :heatmap) || series[:marker_z] != nothing
-            cmap = true
-        end
         if st == :pie
             draw_axes = false
         end
         if st == :heatmap
             outside_ticks = true
+            x, y = heatmap_edges(series[:x], sp[:xaxis][:scale]), heatmap_edges(series[:y], sp[:yaxis][:scale])
+            xy_lims = x[1], x[end], y[1], y[end]
+            expand_extrema!(sp[:xaxis], x)
+            expand_extrema!(sp[:yaxis], y)
+            data_lims = gr_xy_axislims(sp)
         end
     end
 
-    if cmap && sp[:colorbar] != :none
+    if cmap
         # note: add extra midpadding on the right for the colorbar
         viewport_plotarea[2] -= 0.1
     end
@@ -552,16 +693,15 @@ function gr_display(sp::Subplot{GRBackend}, w, h, viewport_canvas)
         ticksize = 0.01 * (viewport_plotarea[2] - viewport_plotarea[1])
 
         # GR.setlinetype(GR.LINETYPE_DOTTED)
-        if sp[:grid]
-            GR.grid3d(xtick, 0, ztick, xmin, ymax, zmin, 2, 0, 2)
-            GR.grid3d(0, ytick, 0, xmin, ymax, zmin, 0, 2, 0)
-        end
+        xaxis[:grid] && GR.grid3d(xtick, 0, 0, xmin, ymax, zmin, 2, 0, 0)
+        yaxis[:grid] && GR.grid3d(0, ytick, 0, xmin, ymax, zmin, 0, 2, 0)
+        zaxis[:grid] && GR.grid3d(0, 0, ztick, xmin, ymax, zmin, 0, 0, 2)
         GR.axes3d(xtick, 0, ztick, xmin, ymin, zmin, 2, 0, 2, -ticksize)
         GR.axes3d(0, ytick, 0, xmax, ymin, zmin, 0, 2, 0, ticksize)
 
     elseif ispolar(sp)
         r = gr_set_viewport_polar()
-        rmin, rmax = GR.adjustrange(minimum(r), maximum(r))
+        rmin, rmax = GR.adjustrange(ignorenan_minimum(r), ignorenan_maximum(r))
         # rmin, rmax = axis_limits(sp[:yaxis])
         gr_polaraxes(rmin, rmax)
 
@@ -570,65 +710,85 @@ function gr_display(sp::Subplot{GRBackend}, w, h, viewport_canvas)
             GR.setwindow(xmin, xmax, ymin, ymax)
         end
 
-        xticks, yticks, spine_segs, grid_segs = axis_drawing_info(sp)
+        xticks, yticks, xspine_segs, yspine_segs, xtick_segs, ytick_segs, xgrid_segs, ygrid_segs, xborder_segs, yborder_segs = axis_drawing_info(sp)
         # @show xticks yticks #spine_segs grid_segs
 
         # draw the grid lines
-        if sp[:grid]
+        if xaxis[:grid]
             # gr_set_linecolor(sp[:foreground_color_grid])
             # GR.grid(xtick, ytick, 0, 0, majorx, majory)
-            gr_set_line(1, :dot, sp[:foreground_color_grid])
-            GR.settransparency(0.5)
-            gr_polyline(coords(grid_segs)...)
+            gr_set_line(xaxis[:gridlinewidth], xaxis[:gridstyle], xaxis[:foreground_color_grid])
+            GR.settransparency(xaxis[:gridalpha])
+            gr_polyline(coords(xgrid_segs)...)
+        end
+        if yaxis[:grid]
+            gr_set_line(yaxis[:gridlinewidth], yaxis[:gridstyle], yaxis[:foreground_color_grid])
+            GR.settransparency(yaxis[:gridalpha])
+            gr_polyline(coords(ygrid_segs)...)
         end
         GR.settransparency(1.0)
 
-        # spine (border) and tick marks
-        gr_set_line(1, :solid, sp[:xaxis][:foreground_color_axis])
-        gr_polyline(coords(spine_segs)...)
+        # axis lines
+        gr_set_line(1, :solid, xaxis[:foreground_color_axis])
+        GR.setclip(0)
+        gr_polyline(coords(xspine_segs)...)
+        gr_set_line(1, :solid, yaxis[:foreground_color_axis])
+        GR.setclip(0)
+        gr_polyline(coords(yspine_segs)...)
+        GR.setclip(1)
 
-        if !(xticks in (nothing, false))
+        # axis ticks
+        if sp[:framestyle] in (:zerolines, :grid)
+            gr_set_line(1, :solid, xaxis[:foreground_color_grid])
+            GR.settransparency(xaxis[:gridalpha])
+        else
+            gr_set_line(1, :solid, xaxis[:foreground_color_axis])
+        end
+        GR.setclip(0)
+        gr_polyline(coords(xtick_segs)...)
+        if sp[:framestyle] in (:zerolines, :grid)
+            gr_set_line(1, :solid, yaxis[:foreground_color_grid])
+            GR.settransparency(yaxis[:gridalpha])
+        else
+            gr_set_line(1, :solid, yaxis[:foreground_color_axis])
+        end
+        GR.setclip(0)
+        gr_polyline(coords(ytick_segs)...)
+        GR.setclip(1)
+
+        # tick marks
+        if !(xticks in (:none, nothing, false))
             # x labels
-            flip = sp[:yaxis][:flip]
-            mirror = sp[:xaxis][:mirror]
-            gr_set_font(sp[:xaxis][:tickfont],
-                        valign = (mirror ? :bottom : :top),
-                        color = sp[:xaxis][:foreground_color_axis],
-                        rotation = sp[:xaxis][:rotation])
+            flip, mirror = gr_set_xticks_font(sp)
             for (cv, dv) in zip(xticks...)
-                # use xor to get the right y coords
-                xi, yi = GR.wctondc(cv, xor(flip, mirror) ? ymax : ymin)
-                gr_text(xi, yi + (mirror ? 1 : -1) * 2e-3, string(dv))
+                # use xor ($) to get the right y coords
+                xi, yi = GR.wctondc(cv, sp[:framestyle] == :origin ? 0 : xor(flip, mirror) ? ymax : ymin)
+                # @show cv dv ymin xi yi flip mirror (flip $ mirror)
+                gr_text(xi, yi + (mirror ? 1 : -1) * 5e-3, string(dv))
             end
         end
 
-        if !(yticks in (nothing, false))
+        if !(yticks in (:none, nothing, false))
             # y labels
-            flip = sp[:xaxis][:flip]
-            mirror = sp[:yaxis][:mirror]
-            gr_set_font(sp[:yaxis][:tickfont],
-                        halign = (mirror ? :left : :right),
-                        color = sp[:yaxis][:foreground_color_axis],
-                        rotation = sp[:yaxis][:rotation])
+            flip, mirror = gr_set_yticks_font(sp)
             for (cv, dv) in zip(yticks...)
                 # use xor ($) to get the right y coords
-                xi, yi = GR.wctondc(xor(flip, mirror) ? xmax : xmin, cv)
-                gr_text(xi + (mirror ? 1 : -1) * 2e-3, yi, string(dv))
+                xi, yi = GR.wctondc(sp[:framestyle] == :origin ? 0 : xor(flip, mirror) ? xmax : xmin, cv)
+                # @show cv dv xmin xi yi
+                gr_text(xi + (mirror ? 1 : -1) * 1e-2, yi, string(dv))
             end
         end
 
-        # window_diag = sqrt(gr_view_xdiff()^2 + gr_view_ydiff()^2)
-        # ticksize = 0.0075 * window_diag
-        # if outside_ticks
-        #     ticksize = -ticksize
-        # end
-        # # TODO: this should be done for each axis separately
-        # gr_set_linecolor(xaxis[:foreground_color_axis])
-
-        # x1, x2 = xaxis[:flip] ? (xmax,xmin) : (xmin,xmax)
-        # y1, y2 = yaxis[:flip] ? (ymax,ymin) : (ymin,ymax)
-        # GR.axes(xtick, ytick, x1, y1, 1, 1, ticksize)
-        # GR.axes(xtick, ytick, x2, y2, -1, -1, -ticksize)
+        # border
+        intensity = sp[:framestyle] == :semi ? 0.5 : 1.0
+        if sp[:framestyle] in (:box, :semi)
+            gr_set_line(intensity, :solid, xaxis[:foreground_color_border])
+            GR.settransparency(intensity)
+            gr_polyline(coords(xborder_segs)...)
+            gr_set_line(intensity, :solid, yaxis[:foreground_color_border])
+            GR.settransparency(intensity)
+            gr_polyline(coords(yborder_segs)...)
+        end
     end
     # end
 
@@ -662,6 +822,9 @@ function gr_display(sp::Subplot{GRBackend}, w, h, viewport_canvas)
     # this needs to be here to point the colormap to the right indices
     GR.setcolormap(1000 + GR.COLORMAP_COOLWARM)
 
+    # calculate the colorbar limits once for a subplot
+    clims = get_clims(sp)
+
     for (idx, series) in enumerate(series_list(sp))
         st = series[:seriestype]
 
@@ -694,10 +857,6 @@ function gr_display(sp::Subplot{GRBackend}, w, h, viewport_canvas)
 
         # recompute data
         if typeof(z) <: Surface
-            # if st == :heatmap
-            #     expand_extrema!(sp[:xaxis], (x[1]-0.5*(x[2]-x[1]), x[end]+0.5*(x[end]-x[end-1])))
-            #     expand_extrema!(sp[:yaxis], (y[1]-0.5*(y[2]-y[1]), y[end]+0.5*(y[end]-y[end-1])))
-            # end
             z = vec(transpose_z(series, z.surf, false))
         elseif ispolar(sp)
             if frng != nothing
@@ -714,9 +873,9 @@ function gr_display(sp::Subplot{GRBackend}, w, h, viewport_canvas)
                     fr_from, fr_to = (is_2tuple(frng) ? frng : (y, frng))
                     for (i,rng) in enumerate(iter_segments(series[:x], series[:y]))
                         if length(rng) > 1
-                            gr_set_fillcolor(cycle(series[:fillcolor], i))
-                            fx = cycle(x, vcat(rng, reverse(rng)))
-                            fy = vcat(cycle(fr_from,rng), cycle(fr_to,reverse(rng)))
+                            gr_set_fillcolor(_cycle(series[:fillcolor], i))
+                            fx = _cycle(x, vcat(rng, reverse(rng)))
+                            fy = vcat(_cycle(fr_from,rng), _cycle(fr_to,reverse(rng)))
                             # @show i rng fx fy
                             GR.fillarea(fx, fy)
                         end
@@ -732,22 +891,21 @@ function gr_display(sp::Subplot{GRBackend}, w, h, viewport_canvas)
             end
 
             if series[:markershape] != :none
-                gr_draw_markers(series, x, y)
+                if series[:marker_z] != nothing
+                    zmin, zmax = extrema(series[:marker_z])
+                    GR.setspace(zmin, zmax, 0, 90)
+                end
+                gr_draw_markers(series, x, y, clims)
             end
 
         elseif st == :contour
-            zmin, zmax = gr_lims(zaxis, false)
-            clims = sp[:clims]
-            if is_2tuple(clims)
-                isfinite(clims[1]) && (zmin = clims[1])
-                isfinite(clims[2]) && (zmax = clims[2])
-            end
+            zmin, zmax = clims
+            GR.setspace(zmin, zmax, 0, 90)
             if typeof(series[:levels]) <: Array
                 h = series[:levels]
             else
                 h = linspace(zmin, zmax, series[:levels])
             end
-            GR.setspace(zmin, zmax, 0, 90)
             if series[:fillrange] != nothing
                 GR.surface(x, y, z, GR.OPTION_CELL_ARRAY)
             else
@@ -755,9 +913,9 @@ function gr_display(sp::Subplot{GRBackend}, w, h, viewport_canvas)
             end
 
             # create the colorbar of contour levels
-            if sp[:colorbar] != :none
+            if cmap
                 gr_set_viewport_cmap(sp)
-                l = round(Int32, 1000 + (h - minimum(h)) / (maximum(h) - minimum(h)) * 255)
+                l = round.(Int32, 1000 + (h - ignorenan_minimum(h)) / (ignorenan_maximum(h) - ignorenan_minimum(h)) * 255)
                 GR.setwindow(xmin, xmax, zmin, zmax)
                 GR.cellarray(xmin, xmax, zmax, zmin, 1, length(l), l)
                 ztick = 0.5 * GR.tick(zmin, zmax)
@@ -779,20 +937,18 @@ function gr_display(sp::Subplot{GRBackend}, w, h, viewport_canvas)
             cmap && gr_colorbar(sp)
 
         elseif st == :heatmap
-            zmin, zmax = gr_lims(zaxis, true)
-            clims = sp[:clims]
-            if is_2tuple(clims)
-                isfinite(clims[1]) && (zmin = clims[1])
-                isfinite(clims[2]) && (zmax = clims[2])
-            end
+            xmin, xmax, ymin, ymax = xy_lims
+            zmin, zmax = clims
+            GR.setspace(zmin, zmax, 0, 90)
             grad = isa(series[:fillcolor], ColorGradient) ? series[:fillcolor] : cgrad()
             colors = [grad[clamp((zi-zmin) / (zmax-zmin), 0, 1)] for zi=z]
             rgba = map(c -> UInt32( round(Int, alpha(c) * 255) << 24 +
                                     round(Int,  blue(c) * 255) << 16 +
                                     round(Int, green(c) * 255) << 8  +
                                     round(Int,   red(c) * 255) ), colors)
-            GR.drawimage(xmin, xmax, ymax, ymin, length(x), length(y), rgba)
-            cmap && gr_colorbar(sp)
+            w, h = length(x), length(y)
+            GR.drawimage(xmin, xmax, ymax, ymin, w, h, rgba)
+            cmap && gr_colorbar(sp, clims)
 
         elseif st in (:path3d, :scatter3d)
             # draw path
@@ -806,7 +962,7 @@ function gr_display(sp::Subplot{GRBackend}, w, h, viewport_canvas)
             # draw markers
             if st == :scatter3d || series[:markershape] != :none
                 x2, y2 = unzip(map(GR.wc3towc, x, y, z))
-                gr_draw_markers(series, x2, y2)
+                gr_draw_markers(series, x2, y2, clims)
             end
 
         # TODO: replace with pie recipe
@@ -814,7 +970,7 @@ function gr_display(sp::Subplot{GRBackend}, w, h, viewport_canvas)
             GR.selntran(0)
             GR.setfillintstyle(GR.INTSTYLE_SOLID)
             xmin, xmax, ymin, ymax = viewport_plotarea
-            ymax -= 0.05 * (xmax - xmin)
+            ymax -= 0.1 * (xmax - xmin)
             xcenter = 0.5 * (xmin + xmax)
             ycenter = 0.5 * (ymin + ymax)
             if xmax - xmin > ymax - ymin
@@ -867,19 +1023,19 @@ function gr_display(sp::Subplot{GRBackend}, w, h, viewport_canvas)
                     x, y = series[:x][rng], series[:y][rng]
 
                     # draw the interior
-                    gr_set_fill(cycle(series[:fillcolor], i))
+                    gr_set_fill(_cycle(series[:fillcolor], i))
                     GR.fillarea(x, y)
 
                     # draw the shapes
-                    gr_set_line(series[:linewidth], :solid, cycle(series[:linecolor], i))
+                    gr_set_line(series[:linewidth], :solid, _cycle(series[:linecolor], i))
                     GR.polyline(x, y)
                 end
             end
 
 
         elseif st == :image
-            z = transpose_z(series, series[:z].surf, true)
-            h, w = size(z)
+            z = transpose_z(series, series[:z].surf, true)'
+            w, h = size(z)
             if eltype(z) <: Colors.AbstractGray
                 grey = round(UInt8, float(z) * 255)
                 rgba = map(c -> UInt32( 0xff000000 + Int(c)<<16 + Int(c)<<8 + Int(c) ), grey)
@@ -912,8 +1068,13 @@ function gr_display(sp::Subplot{GRBackend}, w, h, viewport_canvas)
         w = 0
         i = 0
         n = 0
+        if sp[:legendtitle] != nothing
+            tbx, tby = gr_inqtext(0, 0, string(sp[:legendtitle]))
+            w = tbx[3] - tbx[1]
+            n += 1
+        end
         for series in series_list(sp)
-            Plots.should_add_to_legend(series) || continue
+            should_add_to_legend(series) || continue
             n += 1
             if typeof(series[:label]) <: Array
                 i += 1
@@ -925,9 +1086,9 @@ function gr_display(sp::Subplot{GRBackend}, w, h, viewport_canvas)
             w = max(w, tbx[3] - tbx[1])
         end
         if w > 0
-            xpos = viewport_plotarea[2] - 0.05 - w
-            ypos = viewport_plotarea[4] - 0.06
             dy = _gr_point_mult[1] * sp[:legendfont].pointsize * 1.75
+            h = dy*n
+            (xpos,ypos) = gr_legend_pos(sp[:legend],w,h)
             GR.setfillintstyle(GR.INTSTYLE_SOLID)
             gr_set_fillcolor(sp[:background_color_legend])
             GR.fillrect(xpos - 0.08, xpos + w + 0.02, ypos + dy, ypos - dy * n)
@@ -935,24 +1096,41 @@ function gr_display(sp::Subplot{GRBackend}, w, h, viewport_canvas)
             GR.setlinewidth(1)
             GR.drawrect(xpos - 0.08, xpos + w + 0.02, ypos + dy, ypos - dy * n)
             i = 0
+            if sp[:legendtitle] != nothing
+                GR.settextalign(GR.TEXT_HALIGN_CENTER, GR.TEXT_VALIGN_HALF)
+                gr_set_textcolor(sp[:foreground_color_legend])
+                GR.settransparency(1)
+                gr_text(xpos - 0.03 + 0.5*w, ypos, string(sp[:legendtitle]))
+                ypos -= dy
+            end
             for series in series_list(sp)
-                Plots.should_add_to_legend(series) || continue
+                should_add_to_legend(series) || continue
                 st = series[:seriestype]
                 gr_set_line(series[:linewidth], series[:linestyle], series[:linecolor]) #, series[:linealpha])
-                if st == :path
-                    GR.polyline([xpos - 0.07, xpos - 0.01], [ypos, ypos])
-                elseif st == :shape
+
+                if (st == :shape || series[:fillrange] != nothing) && series[:ribbon] == nothing
                     gr_set_fill(series[:fillcolor]) #, series[:fillalpha])
                     l, r = xpos-0.07, xpos-0.01
                     b, t = ypos-0.4dy, ypos+0.4dy
                     x = [l, r, r, l, l]
                     y = [b, b, t, t, b]
+                    GR.settransparency(gr_alpha(series[:fillalpha]))
                     gr_polyline(x, y, GR.fillarea)
-                    gr_polyline(x, y)
+                    GR.settransparency(gr_alpha(series[:linealpha]))
+                    st == :shape && gr_polyline(x, y)
+                end
+
+                if st == :path
+                    GR.settransparency(gr_alpha(series[:linealpha]))
+                    if series[:fillrange] == nothing || series[:ribbon] != nothing
+                        GR.polyline([xpos - 0.07, xpos - 0.01], [ypos, ypos])
+                    else
+                        GR.polyline([xpos - 0.07, xpos - 0.01], [ypos+0.4dy, ypos+0.4dy])
+                    end
                 end
 
                 if series[:markershape] != :none
-                    gr_draw_markers(series, xpos-[0.06,0.02], [ypos,ypos], 10, nothing)
+                    gr_draw_markers(series, xpos - .035, ypos, 6, nothing)
                 end
 
                 if typeof(series[:label]) <: Array

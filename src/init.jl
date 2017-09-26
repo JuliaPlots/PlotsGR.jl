@@ -3,10 +3,12 @@ import GR
 export GR
 
 using Reexport
-@reexport using Plots
+@reexport using PlotsBase
+
+# Do I also need: GRBackend
 
 import Plots:
-    GRBackend, Plot, Subplot, Axis, Series, Font, Arrow, EachAnn,
+    Plot, Subplot, Axis, Series, Font, Arrow, EachAnn,
     cycle, left, right, top, bottom, axis_limits, series_list,
     is3d, ispolar, axis_drawing_info, series_annotations_shapes!
 
@@ -27,7 +29,8 @@ function __init__()
         :title, :window_title,
         :guide, :lims, :ticks, :scale, :flip,
         :tickfont, :guidefont, :legendfont,
-        :grid, :legend, :colorbar,
+        :grid, :gridalpha, :gridstyle, :gridlinewidth,
+        :legend, :legendtitle, :colorbar,
         :marker_z, :levels,
         :ribbon, :quiver,
         :orientation,
@@ -38,6 +41,7 @@ function __init__()
         :inset_subplots,
         :bar_width,
         :arrow,
+        :framestyle,
     ])
     Plots._seriestype[:gr] = [
         :path, :scatter,
