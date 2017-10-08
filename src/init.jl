@@ -2,10 +2,13 @@
 import GR
 export GR
 
+immutable GRBackend <: AbstractBackend end
+export gr
+gr(; kw...) = (default(; kw...); backend(:gr))
+backend_name(::GRBackend) = :PlotsGR
+
 using Reexport
 @reexport using PlotsBase
-
-# Do I also need: GRBackend
 
 import Plots:
     Plot, Subplot, Axis, Series, Font, Arrow, EachAnn,
@@ -52,6 +55,10 @@ function __init__()
     Plots._style[:gr] = [:auto, :solid, :dash, :dot, :dashdot, :dashdotdot]
     Plots._marker[:gr] = Plots._allMarkers
     Plots._scale[:gr] = [:identity, :log10]
+
+    push!(_backends, :gr)
+    _backendType[:gr] = GRBackend
+    _backendSymbol[GRBackend] = :gr
 end
 
 Plots.is_marker_supported(::GRBackend, shape::Shape) = true
